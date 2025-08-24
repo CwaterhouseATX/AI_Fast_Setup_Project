@@ -1,11 +1,41 @@
-# ===== Cell 3: Sentiment Dashboard + Custom Chart + AI Assistant =====
-# (Snowpark + Streamlit; top nav radio + optional tabs; product compare in custom chart)
-
-import re
-import pandas as pd
-import plotly.express as px
+# --- replace get_active_session() with an explicit Snowpark session ---
+import os
 import streamlit as st
-from snowflake.snowpark.context import get_active_session
+from snowflake.snowpark import Session
+
+def make_session() -> Session:
+    # Prefer Streamlit secrets; fall back to env vars if you want
+    cfg = st.secrets.get("snowflake", {})
+    if not cfg:
+        cfg = {
+            "account":   os.environ["SF_ACCOUNT"],
+            "user":      os.environ["SF_USER"],
+            "password":  os.environ.get("SF_PASSWORD", ""),   # OR key-pair, see note below
+            "role":      os.environ.get("SF_ROLE", "PUBLIC"),
+            "warehouse": os.environ["SF_WAREHOUSE"],
+            "database":  os.environ["SF_DATABASE"],
+            "schema":    os.environ["SF_SCHEMA"],
+        }
+
+    # Build the session (password auth shown; key-pair works too)
+    params = {
+        "account":   cfg["account"],     # e.g. xy12345.us-east-1 (no .snowflakecomputing.com)
+        "user":      cfg["user"],
+        "role":      cfg.get("role"),
+        "warehouse": cfg.get("warehouse"),
+        "database":  cfg.get("database"),
+        "schema":    cfg.get("schema"),
+    }
+    if "password" in cfg and cfg["password"]:
+        params["password"] = cfg["password"]
+    # --- key-pair auth (optional) ---
+    # elif "private_key" in cfg: params["private_key"] = cfg["private_key"]
+    # elif "private_key_b64" in cfg: ... decode to bytes and load with cryptography
+
+    return Session.builder.configs(params).create()
+
+session = make_session()
+
 
 # ---------- Title ----------
 st.markdown('<h1 style="text-align:center;color:#1f77b4;">📊 Sentiment Analysis + 🤖 AI Assistant</h1>', unsafe_allow_html=True)

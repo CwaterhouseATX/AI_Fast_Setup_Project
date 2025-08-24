@@ -1,7 +1,21 @@
 # --- replace get_active_session() with an explicit Snowpark session ---
 import os
 import streamlit as st
+# --- Simple: hard-coded Snowpark session (demo only) ---
 from snowflake.snowpark import Session
+
+SF_CONFIG = {
+    "account":   "xy12345.us-east-1",   # account locator + region (no .snowflakecomputing.com)
+    "user":      "DEMO_USER",
+    "password":  "DEMO_PASSWORD",
+    "role":      "ANALYST",             # keep minimal
+    "warehouse": "COMPUTE_WH",
+    "database":  "AVALANCHE_DB",
+    "schema":    "AVALANCHE_SCHEMA",
+}
+
+session = Session.builder.configs(SF_CONFIG).create()
+
 
 def make_session() -> Session:
     # Prefer Streamlit secrets; fall back to env vars if you want

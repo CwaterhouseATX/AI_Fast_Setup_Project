@@ -16,10 +16,6 @@ from snowflake.snowpark import Session
 # Snowflake connection (Secrets-first; CSV fallback)
 # ================================
 def connect_snowflake_from_secrets() -> Session | None:
-    """
-    Returns a Snowpark Session if [snowflake] secrets are present,
-    otherwise returns None (so the app can run in CSV demo mode).
-    """
     cfg = st.secrets.get("snowflake")
     if not cfg:
         return None
@@ -31,44 +27,24 @@ def connect_snowflake_from_secrets() -> Session | None:
         "database":  cfg["database"],
         "schema":    cfg["schema"],
     }
-    # Use either host or account (not both)
-    if "host" in cfg:
-        params["host"] = cfg["host"]
-    elif "account" in cfg:
-        params["account"] = cfg["account"]
+
+    # Accept host or account; if host is given, also derive account
+    host = cfg.get("host")
+    acct = cfg.get("account")
+    if host:
+        params["host"] = host
+        # Derive "bxb73724.us-west-2" from host "bxb73724.us-west-2.snowflakecomputing.com"
+        if not acct and ".snowflakecomputing.com" in host:
+            params["account"] = host.split(".snowflakecomputing.com", 1)[0]
+    elif acct:
+        params["account"] = acct
     else:
         st.error("Add either 'host' or 'account' to [snowflake] secrets.")
         st.stop()
 
-    # Auth: password OR key-pair (private_key_b64)
-    if cfg.get("password"):
-        params["password"] = cfg["password"]
-    elif cfg.get("private_key_b64"):
-        try:
-            from cryptography.hazmat.primitives import serialization
-        except Exception:
-            st.error(
-                "Secrets specify 'private_key_b64' but 'cryptography' isn't installed. "
-                "Add 'cryptography' to requirements.txt or use password auth."
-            )
-            st.stop()
-        pk = base64.b64decode(cfg["private_key_b64"])
-        private_key = serialization.load_pem_private_key(pk, password=None)
-        params["private_key"] = private_key
-    else:
-        st.error("Provide either 'password' or 'private_key_b64' in [snowflake] secrets.")
-        st.stop()
-
-    try:
-        return Session.builder.configs(params).create()
-    except Exception as e:
-        st.error(f"Failed to connect to Snowflake. Check your secrets. Error: {e}")
-        st.stop()
-
-
-# Create session if secrets exist (None => demo/CSV mode)
-session = connect_snowflake_from_secrets()
-DEMO_MODE = session is None
+    # Auth (password or key-pair)...
+    # ... (keep the rest of your function the same)
+    return Session.builder.configs(params).create()
 
 
 # ----- Page Title -----

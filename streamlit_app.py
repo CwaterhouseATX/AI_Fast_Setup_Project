@@ -3,88 +3,108 @@
 # Dashboard + Custom Chart + AI
 # ================================
 
-# ----- Imports -----
-import base64
 import re
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from snowflake.snowpark import Session
 
-
 # ================================
 # Snowflake connection (Secrets-first; CSV fallback)
 # ================================
 def connect_snowflake_from_secrets() -> Session | None:
-    cfg = st.secrets.get("snowflake")
-    if not cfg:
+    """Connect to Snowflake using secrets, return None if not available"""
+    try:
+        cfg = st.secrets["snowflake"]
+    except KeyError:
         return None
 
     params = {
-        "user":      cfg["user"],
-        "role":      cfg.get("role"),
+        "user": cfg["user"],
+        "role": cfg.get("role"),
         "warehouse": cfg["warehouse"],
-        "database":  cfg["database"],
-        "schema":    cfg["schema"],
+        "database": cfg["database"],
+        "schema": cfg["schema"],
     }
 
-    # Accept host or account; if host is given, also derive account
+    # Accept host or account
     host = cfg.get("host")
     acct = cfg.get("account")
     if host:
         params["host"] = host
-        # Derive "bxb73724.us-west-2" from host "bxb73724.us-west-2.snowflakecomputing.com"
         if not acct and ".snowflakecomputing.com" in host:
             params["account"] = host.split(".snowflakecomputing.com", 1)[0]
     elif acct:
         params["account"] = acct
     else:
         st.error("Add either 'host' or 'account' to [snowflake] secrets.")
-        st.stop()
+        return None
 
-    # Auth (password or key-pair)...
-    # ... (keep the rest of your function the same)
-    return Session.builder.configs(params).create()
+    # Authentication
+    password = cfg.get("password")
+    if password:
+        params["password"] = password
+    else:
+        private_key = cfg.get("private_key")
+        if private_key:
+            params["private_key"] = private_key
+        else:
+            st.error("Add 'password' or 'private_key' to [snowflake] secrets.")
+            return None
 
+    try:
+        return Session.builder.configs(params).create()
+    except Exception as e:
+        st.error(f"Failed to connect to Snowflake: {e}")
+        return None
 
-# ----- Page Title -----
-st.markdown(
-    '<h1 style="text-align:center;color:#1f77b4;">📊 Sentiment Analysis + 🤖 AI Assistant</h1>',
-    unsafe_allow_html=True
-)
+# ================================
+# Initialize session and demo mode
+# ================================
+session = connect_snowflake_from_secrets()
+DEMO_MODE = session is None
 
-# ----- Sidebar: Data + Analysis -----
+# ---------- Title ----------
+st.markdown('<h1 style="text-align:center;color:#1f77b4;">📊 Sentiment Analysis + 🤖 AI Assistant</h1>', unsafe_allow_html=True)
+
+# ---------- Sidebar: Data + Analysis ----------
 st.sidebar.header("Data Configuration")
-# Defaults: from secrets if present, else sensible fallbacks for demo
-default_db     = (st.secrets.get("snowflake", {}).get("database")  if not DEMO_MODE else "AVALANCHE_DB")
-default_schema = (st.secrets.get("snowflake", {}).get("schema")    if not DEMO_MODE else "AVALANCHE_SCHEMA")
 
-db     = st.sidebar.text_input("Database", value=default_db or "AVALANCHE_DB")
-schema = st.sidebar.text_input("Schema",   value=default_schema or "AVALANCHE_SCHEMA")
-table  = st.sidebar.text_input("Table",    value="REVIEW_SENTIMENT")
+# Get defaults from secrets if available
+try:
+    snowflake_config = st.secrets["snowflake"]
+    default_db = snowflake_config.get("database", "AVALANCHE_DB") if not DEMO_MODE else "AVALANCHE_DB"
+    default_schema = snowflake_config.get("schema", "AVALANCHE_SCHEMA") if not DEMO_MODE else "AVALANCHE_SCHEMA"
+except KeyError:
+    default_db = "AVALANCHE_DB"
+    default_schema = "AVALANCHE_SCHEMA"
+
+db = st.sidebar.text_input("Database", value=default_db)
+schema = st.sidebar.text_input("Schema", value=default_schema)
+table = st.sidebar.text_input("Table", value="REVIEW_SENTIMENT")
 
 st.sidebar.subheader("Analysis")
-load_all  = st.sidebar.checkbox("Load all rows", value=True, disabled=DEMO_MODE)
-max_rows  = st.sidebar.slider("Max rows (ignored if Load all)", 100, 200000, 10000, step=500, disabled=DEMO_MODE)
+load_all = st.sidebar.checkbox("Load all rows", value=True, disabled=DEMO_MODE)
+max_rows = st.sidebar.slider("Max rows (ignored if Load all)", 100, 200000, 10000, step=500, disabled=DEMO_MODE)
 
-# Core columns in your table / CSV
-text_col  = st.sidebar.text_input("Text column", value="REVIEW_TEXT")
-id_col    = st.sidebar.text_input("ID column (optional)", value="ORDER_ID")
+# Core columns in your table
+text_col = st.sidebar.text_input("Text column", value="REVIEW_TEXT")
+id_col = st.sidebar.text_input("ID column (optional)", value="ORDER_ID")
 score_col = st.sidebar.text_input("Score column (sentiment)", value="SENTIMENT_SCORE")
 label_col = st.sidebar.text_input("Label column (optional)", value="SENTIMENT_LABEL")
-pos_thr   = st.sidebar.number_input("Positive threshold", value=0.10, step=0.05, format="%.2f")
-neg_thr   = st.sidebar.number_input("Negative threshold", value=-0.10, step=0.05, format="%.2f")
+pos_thr = st.sidebar.number_input("Positive threshold", value=0.10, step=0.05, format="%.2f")
+neg_thr = st.sidebar.number_input("Negative threshold", value=-0.10, step=0.05, format="%.2f")
 
 st.sidebar.markdown("---")
 st.sidebar.header("AI Assistant")
-ai_model  = st.sidebar.selectbox("Cortex model", ["llama3-8b", "mistral-7b", "snowflake-arctic"], index=0, disabled=DEMO_MODE)
-ai_limit  = st.sidebar.number_input("Add LIMIT if missing", min_value=1, value=200, step=50, disabled=DEMO_MODE)
+ai_model = st.sidebar.selectbox("Cortex model", ["llama3-8b", "mistral-7b", "snowflake-arctic"], index=0, disabled=DEMO_MODE)
+ai_limit = st.sidebar.number_input("Add LIMIT if missing", min_value=1, value=200, step=50, disabled=DEMO_MODE)
 
-# Optional: Tabs UI (classic look) — tabs reset to first on rerun
+# Optional: Tabs UI (classic look)
 use_tabs = st.sidebar.checkbox("Use tabs UI (may reset on rerun)", value=False)
 
 # Context button only when connected to Snowflake
-if not DEMO_MODE:
+if not DEMO_MODE and session:
     if st.sidebar.button("Use context (DB, Schema)"):
         try:
             session.sql(f'USE DATABASE "{db}"').collect()
@@ -95,10 +115,7 @@ if not DEMO_MODE:
 else:
     st.sidebar.info("Running in demo (CSV) mode. Connect Snowflake via Secrets to enable SQL & AI.")
 
-# Fully-qualified table (used when session is available)
-fq = f'"{db}"."{schema}"."{table}"'
-
-# Demo CSV controls (shown only in demo mode)
+# ---------- Demo CSV controls (shown only in demo mode) ----------
 csv_file = None
 if DEMO_MODE:
     st.sidebar.markdown("---")
@@ -106,73 +123,105 @@ if DEMO_MODE:
     uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
     default_csv_path = st.sidebar.text_input("Or path in repo", value="data/review_sentiment.csv")
     if uploaded:
-        csv_file = uploaded  # file-like
+        csv_file = uploaded
     else:
-        csv_file = default_csv_path  # string path
+        csv_file = default_csv_path
 
-# ----- Data Loader -----
+# ---------- Snowflake session + FQ ----------
+fq = f'"{db}"."{schema}"."{table}"'
+
+# ---------- Product list (helper) ----------
 @st.cache_data(show_spinner=False)
-def load_data_sql(session: Session, fq_table: str, text_c: str, score_c: str, label_c: str | None,
-                  all_rows: bool, limit_n: int, pos_thr: float, neg_thr: float) -> pd.DataFrame:
+def fetch_products(fq_table: str):
+    if DEMO_MODE or not session:
+        return []
+    try:
+        pdf = session.sql(f'SELECT DISTINCT "PRODUCT" FROM {fq_table} ORDER BY 1').to_pandas()
+        return [p for p in pdf["PRODUCT"].dropna().astype(str).tolist()]
+    except Exception:
+        return []
+
+# ---------- Data loading functions ----------
+@st.cache_data(show_spinner=False)
+def load_data_sql(fq_table, text_c, score_c, label_c, all_rows, limit_n, pos_thr, neg_thr):
     limit_clause = "" if all_rows else f"LIMIT {int(limit_n)}"
     sql = f'SELECT * FROM {fq_table} {limit_clause}'
     df = session.sql(sql).to_pandas()
     return _postprocess_df(df, text_c, score_c, label_c, pos_thr, neg_thr)
 
 @st.cache_data(show_spinner=False)
-def load_data_csv(src, text_c: str, score_c: str, label_c: str | None,
-                  pos_thr: float, neg_thr: float) -> pd.DataFrame:
+def load_data_csv(src, text_c, score_c, label_c, pos_thr, neg_thr):
     df = pd.read_csv(src)
     return _postprocess_df(df, text_c, score_c, label_c, pos_thr, neg_thr)
 
-def _postprocess_df(df: pd.DataFrame, text_c: str, score_c: str, label_c: str | None,
-                    pos_thr: float, neg_thr: float) -> pd.DataFrame:
+def _postprocess_df(df, text_c, score_c, label_c, pos_thr, neg_thr):
     # Validate required columns
     needed = [text_c, score_c]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required column(s): {missing}. Available: {list(df.columns)}")
 
+    # Helper columns
     df = df.copy()
     df["polarity"] = df[score_c]
     if label_c and label_c in df.columns:
-        df["sentiment"] = df[label_c].astype(str)
+        df["sentiment"] = df[label_c]
     else:
-        def to_label(x: float) -> str:
+        def to_label(x):
             if x > pos_thr: return "Positive"
             if x < neg_thr: return "Negative"
             return "Neutral"
         df["sentiment"] = df["polarity"].apply(to_label)
 
-    # Parse likely date columns if present
+    # Parse likely date cols
     for c in ["REVIEW_DATE", "SHIPPING_DATE"]:
         if c in df.columns:
             try:
                 df[c] = pd.to_datetime(df[c], errors="coerce")
             except Exception:
                 pass
+
     return df
 
-# ----- Load Data -----
+# ---------- Load data ----------
 with st.spinner("Loading data..."):
     try:
         if DEMO_MODE:
-            df = load_data_csv(csv_file, text_col, score_col, label_col if label_col else None, pos_thr, neg_thr)
+            df = load_data_csv(
+                src=csv_file,
+                text_c=text_col,
+                score_c=score_col,
+                label_c=label_col if label_col else None,
+                pos_thr=pos_thr,
+                neg_thr=neg_thr
+            )
         else:
-            df = load_data_sql(session, fq, text_col, score_col, label_col if label_col else None,
-                               load_all, max_rows, pos_thr, neg_thr)
+            df = load_data_sql(
+                fq_table=fq,
+                text_c=text_col,
+                score_c=score_col,
+                label_c=label_col if label_col else None,
+                all_rows=load_all,
+                limit_n=max_rows,
+                pos_thr=pos_thr,
+                neg_thr=neg_thr
+            )
+        st.success(f"Loaded {len(df):,} rows from {'CSV demo' if DEMO_MODE else f'{db}.{schema}.{table}'}")
     except Exception as e:
         st.error(f"Failed to load data: {e}")
         st.stop()
 
-st.success(f"Loaded {len(df):,} rows from {'CSV demo' if DEMO_MODE else f'{db}.{schema}.{table}'}")
+# Get product options after data is loaded
+product_options = fetch_products(fq) if not DEMO_MODE else []
 
-
-# ----- Top Navigation (sticky across reruns) -----
+# ===============================================================
+# =====================  NAVIGATION (TOP)  ======================
+# ===============================================================
 VIEWS = ["📈 Dashboard", "🧰 Custom Chart"] + ([] if DEMO_MODE else ["🤖 AI Assistant"])
 if "active_view" not in st.session_state:
     st.session_state.active_view = VIEWS[0]
 
+# Top-of-page horizontal radio (widget owns the key)
 view = st.radio(
     "View", VIEWS,
     index=VIEWS.index(st.session_state.active_view),
@@ -180,15 +229,14 @@ view = st.radio(
     key="active_view"
 )
 
-
-# ==========================
-# Section: Dashboard
-# ==========================
+# ===============================================================
+# ===============   SECTION RENDERERS (by view)   ===============
+# ===============================================================
 def render_dashboard():
     total = len(df)
-    avg   = float(df["polarity"].mean())
-    pos   = int((df["sentiment"] == "Positive").sum())
-    neg   = int((df["sentiment"] == "Negative").sum())
+    avg = float(df["polarity"].mean())
+    pos = int((df["sentiment"] == "Positive").sum())
+    neg = int((df["sentiment"] == "Negative").sum())
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total", f"{total:,}")
@@ -238,10 +286,6 @@ def render_dashboard():
         mime="text/csv"
     )
 
-
-# ==========================
-# Section: Custom Chart
-# ==========================
 def render_custom_chart():
     st.subheader("Custom Chart")
 
@@ -251,7 +295,7 @@ def render_custom_chart():
     # Work on a copy just for this chart
     work = df.copy()
 
-    # Optional product filter (default = ALL)
+    # ---- Product filter (optional, default = ALL products) ----
     if "PRODUCT" in work.columns:
         all_prods = sorted(work["PRODUCT"].dropna().astype(str).unique().tolist())
         chart_products = st.multiselect(
@@ -263,7 +307,7 @@ def render_custom_chart():
         if chart_products:
             work = work[work["PRODUCT"].astype(str).isin(chart_products)]
 
-    # Axis choices
+    # ---- Axis choices ----
     all_cols = [c for c in work.columns if c not in exclude_from_dropdown]
     numeric_cols = [c for c in work.select_dtypes(include="number").columns if c in all_cols]
     y_options = ["Count of rows"] + sorted(list(dict.fromkeys(numeric_cols + ["polarity"])))
@@ -280,14 +324,14 @@ def render_custom_chart():
     agg_choice = st.selectbox("Aggregation", list(agg_map), index=(0 if y_sel=="Count of rows" else 1))
     chart_type = st.selectbox("Chart type", ["line", "bar", "scatter"], index=1 if y_sel=="Count of rows" else 0)
 
-    # Clear grouping control
+    # ---- Clear grouping control ----
     group_by_product = st.checkbox(
         "Group / color by PRODUCT",
         value=False,  # DEFAULT OFF: all products aggregate together
         help="Turn on to compare products side-by-side. Leave off to combine all products into one series."
     )
 
-    # Aggregate
+    # ---- Aggregate (robust for any combo) ----
     def aggregate(work_df, x, y_sel, agg, by_product=False):
         group_keys = [x]
         if by_product and "PRODUCT" in work_df.columns and "PRODUCT" not in group_keys:
@@ -310,7 +354,7 @@ def render_custom_chart():
 
     plot_df = aggregate(work, x_col, y_sel, agg_choice, by_product=group_by_product)
 
-    # Draw
+    # ---- Draw ----
     title_txt = f"{y_sel} by {x_col}" + (" (by PRODUCT)" if group_by_product else "")
     color_arg = "PRODUCT" if (group_by_product and "PRODUCT" in plot_df.columns) else None
 
@@ -326,17 +370,13 @@ def render_custom_chart():
     fig.update_layout(height=460)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.caption("Tip: leave the product picker empty to include ALL products. Toggle “Group / color by PRODUCT” to split the series per product.")
+    st.caption("Tip: leave the product picker empty to include ALL products. Toggle 'Group / color by PRODUCT' to split the series per product.")
 
-
-# ==========================
-# Section: AI Assistant
-# ==========================
 def render_ai_assistant():
-    # Cortex via SQL (requires Snowflake session)
-    def call_cortex_sql(model_name: str, prompt: str) -> str:
-        prompt_sql = prompt.replace("'", "''")
+    # --- Cortex call via SQL ---
+    def call_cortex(model_name: str, prompt: str) -> str:
         try:
+            prompt_sql = prompt.replace("'", "''")
             df_resp = session.sql(
                 f"SELECT SNOWFLAKE.CORTEX.COMPLETE('{model_name}', '{prompt_sql}') AS RESPONSE"
             ).to_pandas()
@@ -352,20 +392,19 @@ def render_ai_assistant():
         return sql if " limit " in sql.lower() else f"{sql.rstrip(';')} LIMIT {int(n)}"
 
     def build_prompt(question: str) -> str:
-        # Hint the model to output fenced SQL when appropriate
         return (
             "You are a helpful Snowflake data assistant.\n"
-            f"Use the table {db}.{schema}.{table} (fully-qualified as {fq}).\n"
-            "When useful, answer with a single SQL SELECT that reads from the fully-qualified table. "
-            "If you output SQL, format it in a fenced code block like:\n"
-            "[```sql]\nSELECT ... FROM {fq}\n[```]\n"
-            "Keep answers short.\n\n"
+            f"The dataset to use is {db}.{schema}.{table} (fully-qualified as {fq}).\n"
+            "When useful, answer with a single SQL statement that selects from the fully-qualified table "
+            f"{fq}. If you output SQL, format it as:\n"
+            "```sql\nSELECT ... FROM {fq}\n```\n"
+            "Keep answers short. If SQL is not needed, answer briefly.\n\n"
             f"User question: {question}"
         )
 
     st.subheader("AI Assistant")
     if "chat_ai" not in st.session_state:
-        st.session_state.chat_ai = []  # [{"role": "user"|"assistant", "content": str}]
+        st.session_state.chat_ai = []  # list of {"role": "user"|"assistant", "content": str}
 
     for m in st.session_state.chat_ai:
         with st.chat_message(m["role"]):
@@ -380,7 +419,7 @@ def render_ai_assistant():
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 prompt = build_prompt(user_q)
-                raw = call_cortex_sql(ai_model, prompt)
+                raw = call_cortex(ai_model, prompt)
 
                 sql = extract_sql_block(raw)
                 if sql:
@@ -402,24 +441,28 @@ def render_ai_assistant():
 
     st.caption(f"AI over: {db}.{schema}.{table} • Model: {ai_model}")
 
-
-# ----- Render chosen view -----
+# ---------- Render chosen view ----------
 if use_tabs:
     # Classic tabs look (resets to first tab on rerun)
-    t1, t2, t3 = st.tabs(VIEWS) if not DEMO_MODE else st.tabs(VIEWS)  # VIEWS already hides AI if demo
-    with t1:
-        render_dashboard()
-    with t2:
-        render_custom_chart()
     if not DEMO_MODE:
+        t1, t2, t3 = st.tabs(VIEWS)
+        with t1:
+            render_dashboard()
+        with t2:
+            render_custom_chart()
         with t3:
             render_ai_assistant()
+    else:
+        t1, t2 = st.tabs(VIEWS)  # Only 2 tabs in demo mode
+        with t1:
+            render_dashboard()
+        with t2:
+            render_custom_chart()
 else:
     # Sticky top radio (no jumping on rerun)
     if view == "📈 Dashboard":
         render_dashboard()
     elif view == "🧰 Custom Chart":
         render_custom_chart()
-    else:
-        # Only possible when not DEMO_MODE because VIEWS hides AI otherwise
+    elif view == "🤖 AI Assistant":
         render_ai_assistant()
